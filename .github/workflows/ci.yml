@@ -63,7 +63,8 @@ jobs:
           # Window system headers for Dawn's X11 and Wayland surfaces.
           dnf install -y libX11-devel libxcb-devel libXrandr-devel libXinerama-devel libXcursor-devel \
             libXi-devel libXext-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel wayland-protocols-devel
-          # PowerShell, pinned and checked, for the scripts.
+          # PowerShell, pinned and checked, for the scripts; it needs ICU.
+          dnf install -y libicu
           curl -sSL -o /tmp/pwsh.tar.gz https://github.com/PowerShell/PowerShell/releases/download/v7.4.22/powershell-7.4.22-linux-x64.tar.gz
           echo "9de443bef974f219c98a33b0f4096aace7f30b42188f37a1b14c5da7e82c8a6a  /tmp/pwsh.tar.gz" | sha256sum -c -
           mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && ln -sf /opt/pwsh/pwsh /usr/local/bin/pwsh
@@ -77,7 +78,20 @@ jobs:
 
       - name: Build and package
         shell: pwsh
-        run: ./scripts/build.ps1 -Version $env:VERSION -BuildDir '${{ matrix.build-dir }}' -MaxGlibc '${{ matrix.max-glibc }}'
+        run: |
+          ./scripts/build.ps1 -Version $env:VERSION -BuildDir '${{ matrix.build-dir }}' -MaxGlibc '${{ matrix.max-glibc }}' *>&1 |
+            Tee-Object -FilePath build.log
+          exit $LASTEXITCODE
+
+      # The end of the log as an annotation, so a failure can be read without downloading the log.
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f build.log ]; then
+            TAIL=$(grep -v '^\s*$' build.log | tail -n 60 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Build failed (${{ matrix.platform }})::$TAIL"
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
@@ -115,7 +129,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
       - name: Smoke test
         shell: pwsh
-        run: ./scripts/smoke.ps1 -Archive (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName
+        run: |
+          ./scripts/smoke.ps1 -Archive (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName *>&1 | Tee-Object -FilePath smoke.log
+          exit $LASTEXITCODE
+      - name: Report the failure
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f smoke.log ]; then
+            TAIL=$(grep -v '^\s*$' smoke.log | tail -n 60 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Smoke test failed (${{ matrix.platform }})::$TAIL"
+          fi
 
   release:
     name: Release
