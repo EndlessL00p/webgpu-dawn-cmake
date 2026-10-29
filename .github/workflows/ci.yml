@@ -1,0 +1,140 @@
+# Builds, packages and smoke-tests Dawn for every platform; on a tag, publishes the archives as a
+# release with their SHA-256 sums. Every step calls the scripts in scripts/, so CI runs exactly
+# what a person reproducing an archive runs.
+#
+# This repository is public, so it runs on GitHub-hosted runners only: a self-hosted runner would
+# run any pull request's code.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  # The archive label: the tag on a release, dev otherwise.
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2025
+            # Dawn's dependencies nest deeply: a short build folder keeps paths under 260 characters.
+            build-dir: C:/b
+          - platform: linux-x64
+            os: ubuntu-24.04
+            # Dawn's own release builds use this image: GCC 14 on glibc 2.28, so the library runs on
+            # any distribution with glibc 2.28 or later.
+            container: dockcross/manylinux_2_28-x64:latest
+            build-dir: build
+            max-glibc: '2.28'
+          - platform: macos-arm64
+            os: macos-15
+            build-dir: build
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ${{ matrix.container || '' }}
+      # Mounts the host, to free disk space on it below.
+      options: ${{ matrix.container && '--volume /:/host' || '' }}
+    timeout-minutes: 300
+    steps:
+      - name: Free disk space on the Linux host
+        if: matrix.container
+        run: rm -rf /host/usr/share/dotnet /host/usr/local/lib/android /host/opt/ghc /host/opt/hostedtoolcache/CodeQL
+
+      - name: Set up the Linux container
+        if: matrix.container
+        run: |
+          # Window system headers for Dawn's X11 and Wayland surfaces.
+          dnf install -y libX11-devel libxcb-devel libXrandr-devel libXinerama-devel libXcursor-devel \
+            libXi-devel libXext-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel wayland-protocols-devel
+          # PowerShell, pinned and checked, for the scripts.
+          curl -sSL -o /tmp/pwsh.tar.gz https://github.com/PowerShell/PowerShell/releases/download/v7.4.22/powershell-7.4.22-linux-x64.tar.gz
+          echo "9de443bef974f219c98a33b0f4096aace7f30b42188f37a1b14c5da7e82c8a6a  /tmp/pwsh.tar.gz" | sha256sum -c -
+          mkdir -p /opt/pwsh && tar -xzf /tmp/pwsh.tar.gz -C /opt/pwsh && ln -sf /opt/pwsh/pwsh /usr/local/bin/pwsh
+          git config --global --add safe.directory '*'
+
+      - name: Allow long paths
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v7
+
+      - name: Build and package
+        shell: pwsh
+        run: ./scripts/build.ps1 -Version $env:VERSION -BuildDir '${{ matrix.build-dir }}' -MaxGlibc '${{ matrix.max-glibc }}'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  # The archive on a clean machine, as a consumer gets it. Linux uses the oldest Ubuntu LTS still
+  # supported, with Mesa's software Vulkan driver; Windows uses WARP, its software Direct3D 12.
+  smoke:
+    name: Smoke test (${{ matrix.platform }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2025
+          - platform: linux-x64
+            os: ubuntu-22.04
+          - platform: macos-arm64
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.platform }}
+          path: dist
+      - name: Install a software Vulkan driver
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+      - name: Smoke test
+        shell: pwsh
+        run: ./scripts/smoke.ps1 -Archive (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName
+
+  release:
+    name: Release
+    if: github.ref_type == 'tag'
+    needs: smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat dist/*.zip.sha256 > dist/SHA256SUMS
+          DAWN_TAG="${TAG%-*}"
+          gh release create "$TAG" dist/*.zip dist/SHA256SUMS --repo "${{ github.repository }}" --verify-tag --title "$TAG" \
+            --notes "Dawn [$DAWN_TAG](https://github.com/google/dawn/releases/tag/$DAWN_TAG) as a shared library with its C API, for Windows x64, Linux x64 and macOS arm64. Each archive's VERSIONS file records the exact Dawn commit and compiler, and LICENSES/ the notices of everything in it. Verify downloads against SHA256SUMS."
