@@ -40,6 +40,8 @@ if(WIN32)
 	# A plain variable, so it applies to Dawn below this directory and not to a project that adds this
 	# one from source.
 	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	# Abseil, built into the library, picks its runtime itself.
+	set(ABSL_MSVC_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
 	set(LLVM_USE_CRT_RELEASE MT CACHE STRING "" FORCE)
 	set(LLVM_USE_CRT_DEBUG MTd CACHE STRING "" FORCE)
 endif()

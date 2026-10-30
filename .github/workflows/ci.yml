@@ -76,6 +76,35 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # A compiler cache (sccache), so a change to the packaging does not rebuild all of Dawn. Restored
+      # from the newest entry for the platform, and saved even when the build fails.
+      - uses: actions/cache/restore@v6
+        with:
+          path: .sccache
+          key: sccache-${{ matrix.platform }}-${{ github.sha }}
+          restore-keys: sccache-${{ matrix.platform }}-
+      - name: Set up the compiler cache
+        shell: bash
+        run: |
+          VERSION=v0.16.0
+          case "${{ matrix.platform }}" in
+            windows-x64) ASSET=sccache-$VERSION-x86_64-pc-windows-msvc; EXT=zip; HASH=b8514ed7552e148b0a032114f745118dcb801791adafafeaf9935e4bfb0edf1b ;;
+            linux-x64) ASSET=sccache-$VERSION-x86_64-unknown-linux-musl; EXT=tar.gz; HASH=aec995a83ad3dff3d14b6314e08858b7b73d35ca85a5bcf3d3a9ec07dee35588 ;;
+            macos-arm64) ASSET=sccache-$VERSION-aarch64-apple-darwin; EXT=tar.gz; HASH=ded590cae2c72042c61178632906bef62d635fa20d45f8b22110a2241f430960 ;;
+          esac
+          FOLDER="$RUNNER_TEMP/sccache"
+          mkdir -p "$FOLDER"
+          curl -sSL -o "$FOLDER/archive.$EXT" "https://github.com/mozilla/sccache/releases/download/$VERSION/$ASSET.$EXT"
+          echo "$HASH  $FOLDER/archive.$EXT" | sha256sum -c -
+          if [ "$EXT" = zip ]; then unzip -q "$FOLDER/archive.$EXT" -d "$FOLDER"; else tar -xzf "$FOLDER/archive.$EXT" -C "$FOLDER"; fi
+          echo "$FOLDER/$ASSET" >> "$GITHUB_PATH"
+          {
+            echo "SCCACHE_DIR=$GITHUB_WORKSPACE/.sccache"
+            echo "SCCACHE_CACHE_SIZE=4G"
+            echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          } >> "$GITHUB_ENV"
+
       - name: Build and package
         shell: pwsh
         run: |
@@ -83,14 +112,28 @@ jobs:
             Tee-Object -FilePath build.log
           exit $LASTEXITCODE
 
-      # The end of the log as an annotation, so a failure can be read without downloading the log.
+      - name: Show compiler cache statistics
+        if: always()
+        shell: bash
+        run: |
+          STATS=$(sccache --show-stats | grep -E '^(Compile requests|Cache hits|Cache misses|Non-cacheable calls) ' | sed -E 's/ {2,}/: /' | paste -sd, -)
+          echo "::notice title=Compiler cache (${{ matrix.platform }})::$STATS"
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .sccache
+          key: sccache-${{ matrix.platform }}-${{ github.sha }}
+
+      # The errors, or else the end of the log, as an annotation, so a failure can be read here.
       - name: Report the failure
         if: failure()
         shell: bash
         run: |
           if [ -f build.log ]; then
-            TAIL=$(grep -v '^\s*$' build.log | tail -n 60 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error title=Build failed (${{ matrix.platform }})::$TAIL"
+            LINES=$(grep -E ' error |error:|FAILED|fatal|Error:|Exception' build.log | grep -v 'warning' | head -n 25)
+            [ -z "$LINES" ] && LINES=$(grep -v '^\s*$' build.log | tail -n 30)
+            TEXT=$(echo "$LINES" | cut -c1-400 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Build failed (${{ matrix.platform }})::$TEXT"
           fi
 
       - uses: actions/upload-artifact@v7
