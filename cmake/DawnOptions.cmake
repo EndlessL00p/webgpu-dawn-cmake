@@ -40,6 +40,9 @@ if(WIN32)
 	# A plain variable, so it applies to Dawn below this directory and not to a project that adds this
 	# one from source.
 	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	# No debug information in Release objects. DXC adds /Zi unless this is set, and /Zi's shared
+	# program database cannot be cached by a compiler cache; this value is empty in Release.
+	set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug>:Embedded>")
 	# Abseil, built into the library, picks its runtime itself.
 	set(ABSL_MSVC_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
 	set(LLVM_USE_CRT_RELEASE MT CACHE STRING "" FORCE)
