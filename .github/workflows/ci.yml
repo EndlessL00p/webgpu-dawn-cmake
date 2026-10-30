@@ -113,6 +113,12 @@ jobs:
             Tee-Object -FilePath build.log
           exit $LASTEXITCODE
 
+      - name: Summarise the archive
+        shell: pwsh
+        run: |
+          $Lines = @(Get-Content dist/stage/VERSIONS) + @(Get-ChildItem -Recurse -File dist/stage/bin, dist/stage/lib -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -ne '.cmake' } | ForEach-Object { '{0}: {1:N1} MB' -f $_.Name, ($_.Length / 1MB) })
+          Write-Output "::notice title=Archive (${{ matrix.platform }})::$($Lines -join '%0A')"
       - name: Show compiler cache statistics
         if: always()
         shell: bash
@@ -175,7 +181,10 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/smoke.ps1 -Archive (Get-ChildItem dist/*.zip | Select-Object -First 1).FullName *>&1 | Tee-Object -FilePath smoke.log
-          exit $LASTEXITCODE
+          $Code = $LASTEXITCODE
+          $Summary = Get-Content smoke.log | Where-Object { $_ -match '^(backend|vendor|device|description|shader compiler|no hardware adapter|SMOKE_)' }
+          Write-Output "::notice title=Smoke test (${{ matrix.platform }})::$($Summary -join '%0A')"
+          exit $Code
       - name: Report the failure
         if: failure()
         shell: bash
