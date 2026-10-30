@@ -95,7 +95,8 @@ jobs:
           FOLDER="$RUNNER_TEMP/sccache"
           mkdir -p "$FOLDER"
           curl -sSL -o "$FOLDER/archive.$EXT" "https://github.com/mozilla/sccache/releases/download/$VERSION/$ASSET.$EXT"
-          echo "$HASH  $FOLDER/archive.$EXT" | sha256sum -c -
+          SHA256=$(command -v sha256sum >/dev/null && echo sha256sum || echo "shasum -a 256")
+          echo "$HASH  $FOLDER/archive.$EXT" | $SHA256 -c -
           if [ "$EXT" = zip ]; then unzip -q "$FOLDER/archive.$EXT" -d "$FOLDER"; else tar -xzf "$FOLDER/archive.$EXT" -C "$FOLDER"; fi
           echo "$FOLDER/$ASSET" >> "$GITHUB_PATH"
           {
